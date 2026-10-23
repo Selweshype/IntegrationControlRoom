@@ -108,6 +108,33 @@ function chip(c, s, x, y, fill, color = C.grey, size = 4) {
   rr(c, x, y, w, size * 2, size); c.fillStyle = fill; c.fill(); txt(c, s, x + size, y + size * 1.4, {w: 700, size, color}); return w;
 }
 
+/* ---------- seated or standing: content follows the player's real eye height ----------
+   The layout is designed for a 1.6 m eye height. In the headset we measure the real eye height
+   (about 1.2 m seated) at the start of every screen and move the whole UI to match, so every
+   player sees the same comfortable angles. ?eye=1.2 previews the seated view on a laptop. */
+const DESIGN_EYE = 1.6, MODULE_R = 2.3;
+const SEAT = {offset: 0, pending: true};
+AFRAME.registerComponent('seat-fit', {
+  init() {
+    const eye = parseFloat(params.get('eye'));
+    if (eye > 0.5 && eye < 2.2) document.querySelector('a-camera').setAttribute('position', `0 ${eye} 0`);
+    this.el.addEventListener('enter-vr', () => { SEAT.pending = true; this.wait = 8; });
+    this.el.addEventListener('exit-vr', () => { SEAT.pending = true; this.wait = 2; });
+    this.wait = 2;
+  },
+  tick() {
+    if (!SEAT.pending) return;
+    if (this.wait > 0) { this.wait--; return; }                   // let the headset pose settle after entering VR
+    const cam = this.el.camera; if (!cam) return;
+    const y = cam.matrixWorld.elements[13];
+    if (this.el.is('vr-mode') && !(y > 0.4)) return;              // no valid head pose yet
+    SEAT.pending = false;
+    const off = Math.max(-0.75, Math.min(0.3, y - DESIGN_EYE));
+    if (Math.abs(off - SEAT.offset) < 0.06) return;               // ignore small leans
+    SEAT.offset = off; UI().object3D.position.y = off; fitStands();
+  }
+});
+
 /* ---------- environment: gradient sky + fading floor, light and dark variants ---------- */
 const ENV = {dark: 0, darkT: 0};
 const now = () => document.querySelector('a-scene').time || 0;
@@ -216,6 +243,7 @@ AFRAME.registerComponent('fx', {
     const p = (t - f.press) / 170, dip = p >= 0 && p < 1 ? Math.sin(Math.PI * p) * 0.035 : 0;
     const k = (t - f.shake) / 380, sx = k >= 0 && k < 1 ? Math.sin(k * Math.PI * 6) * 0.014 * (1 - k) : 0;
     el.object3D.position.set(f.x + sx, f.y, f.z + 0.035 * f.hover - 0.05 * (1 - ea));
+    el.object3D.rotation.order = 'YXZ'; el.object3D.rotation.x = f.pitch;
     el.object3D.scale.setScalar((0.96 + 0.04 * ea) * (1 + 0.03 * f.hover - dip));
     f.mesh.material.opacity = ea;
     if (f.shadow) {
@@ -241,7 +269,8 @@ function panel(parent, o) {
     shadow = new THREE.Mesh(new THREE.PlaneGeometry(o.w + SH_PAD, o.h + SH_PAD), new THREE.MeshBasicMaterial({map: shadowTex(o.w, o.h), transparent: true, depthWrite: false, opacity: 0}));
     shadow.position.set(0, -0.012, -0.012); shadow.renderOrder = 9; shadow.raycast = () => {};   // never steals the laser
   }
-  el.fx = {x: o.x || 0, y: o.y || 0, z: o.z || 0, born: null, delay: Math.min(spawnCount++ * 28, 320),
+  const dist = parent.id === 'ui' ? Math.hypot(o.x || 0, o.z || 0) : MODULE_R;   // panels in a module group sit on the 2.3 m arc
+  el.fx = {x: o.x || 0, y: o.y || 0, z: o.z || 0, pitch: Math.atan2((o.y || 0) - DESIGN_EYE, dist || 2.3), born: null, delay: Math.min(spawnCount++ * 28, 320),
     hover: 0, hoverT: 0, press: -1e9, shake: -1e9, mesh, shadow};
   el.setAttribute('fx', '');
   parent.appendChild(el);
@@ -264,21 +293,30 @@ function panel(parent, o) {
   el.redraw();
   return el;
 }
-function clearUI() { const u = UI(); while (u.firstChild) u.removeChild(u.firstChild); spawnCount = 0; }
+function clearUI() { const u = UI(); while (u.firstChild) u.removeChild(u.firstChild); spawnCount = 0; STANDS.length = 0; SEAT.pending = true; }
 function group(parent, x, z, ry) {
   const g = document.createElement('a-entity');
   g.setAttribute('position', `${x} 0 ${z}`); g.setAttribute('rotation', `0 ${ry} 0`); parent.appendChild(g); return g;
 }
 
 /* control-room console: a monitor bezel on a desk; the top strip shows the module's state */
-const CONSOLES = {};
+const CONSOLES = {}, STANDS = [];
+function fitStands() {
+  const floorY = -SEAT.offset, top = 0.88;                          // bezel bottom, in UI coordinates
+  STANDS.forEach(({stand, foot}) => {
+    const h = Math.max(0.05, top - floorY);
+    stand.scale.y = h; stand.position.y = floorY + h / 2; foot.position.y = floorY + 0.015;
+  });
+}
 function addConsole(g, key, w) {
   const o3 = g.object3D, std = col => new THREE.MeshStandardMaterial({color: col, roughness: 0.6, metalness: 0.15});
   const box = (bw, bh, bd, x, y, z, mat) => { const m = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), mat); m.position.set(x, y, z); m.raycast = () => {}; o3.add(m); return m; };
-  box(w, 1.3, 0.05, 0, 1.53, -0.05, std('#2A2C33'));                 // bezel behind the module
-  box(w * 0.78, 0.045, 0.4, 0, 0.86, 0.15, std('#34363E'));          // desk
-  box(0.14, 0.84, 0.14, 0, 0.42, 0.1, std('#26282E'));               // desk column
-  const strip = box(w, 0.014, 0.056, 0, 2.187, -0.05, new THREE.MeshBasicMaterial({color: C.teal}));
+  box(w, 1.3, 0.05, 0, 1.53, -0.075, std('#2A2C33'));                // bezel behind the module
+  const strip = box(w, 0.014, 0.056, 0, 2.187, -0.075, new THREE.MeshBasicMaterial({color: C.teal}));
+  // stand + foot reach down to the real floor, whatever height the content is lifted or lowered to
+  const stand = box(0.12, 1, 0.08, 0, 0, -0.09, std('#26282E')), foot = box(0.7, 0.03, 0.4, 0, 0, -0.09, std('#30323A'));
+  STANDS.push({stand, foot});
+  fitStands();
   CONSOLES[key] = strip;
 }
 function consoleState(key) {
@@ -325,7 +363,7 @@ function showMenu() {
     label: 'Control Room', sub: 'Fix the integration', click: showBriefing});
   panel(u, {x: 0, y: 0.98, z: -2.3, w: 1.9, h: 0.14, draw(c, W, H) {
     card(c, W, H, C.white, C.line);
-    txt(c, 'Point at a button and pull the trigger  ·  On a laptop: click, and drag to look around', W / 2, H / 2 + 1.6, {size: 4.4, align: 'center'});
+    txt(c, 'Point and pull the trigger  ·  Hold the Meta button to re-centre  ·  Laptop: click and drag', W / 2, H / 2 + 1.6, {size: 4.4, align: 'center', max: W - 8});
   }});
 }
 
@@ -465,7 +503,7 @@ function startShift() {
   stopTimer(); clearUI(); setRoom(true);
   Object.assign(R, {a: genA(), b: genB(), c: genC(), solved: {a: false, b: false, c: false}, strikes: 0, left: SHIFT_SECONDS, over: false, flash: {}});
   const u = UI();
-  R.status = panel(u, {x: 0, y: 2.38, z: -2.2, w: 1.35, h: 0.22, draw(c, W, H) {
+  R.status = panel(u, {x: 0, y: 2.31, z: -2.2, w: 1.35, h: 0.22, draw(c, W, H) {
     const hurry = R.left <= 30;
     card(c, W, H, C.white, hurry ? C.orange : null, 2);
     rr(c, 8, H - 4.6, W - 16, 1.8, 0.9); c.fillStyle = C.line; c.fill();          // time-left bar
@@ -587,7 +625,7 @@ async function boot() {
   try { await Promise.all([document.fonts.load(`700 20px ${HEAD}`), document.fonts.load(`400 20px ${BODY}`), document.fonts.load(`700 20px ${BODY}`)]); } catch (e) {}
   const scene = document.querySelector('a-scene');
   const go = () => {
-    buildEnv(); scene.setAttribute('env-fade', '');
+    buildEnv(); scene.setAttribute('env-fade', ''); scene.setAttribute('seat-fit', '');
     scene.querySelectorAll('[laser-controls]').forEach(h => h.setAttribute('reticle', ''));
     document.getElementById('loading').remove(); showMenu();
   };

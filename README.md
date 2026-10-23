@@ -16,6 +16,14 @@ For an 8-minute shift:
 
 https://selweshype.github.io/IntegrationControlRoom/?time=480
 
+## Seated or standing
+
+The game is made to be played seated (a swivel chair is best: the modules are on the left, front and right).
+The page measures the player's eye height at the start of every screen and moves the content to match,
+so it also works when players swap the headset. Hold the Meta button on the right controller to re-centre.
+
+To preview the seated view on a laptop: https://selweshype.github.io/IntegrationControlRoom/?eye=1.2
+
 ## Notes
 
 - `index.html` is self-contained (no external dependencies), so it keeps working offline once it has loaded.
